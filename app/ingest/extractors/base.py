@@ -5,14 +5,12 @@ from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
-class ExtractedText:
+class ExtractedDocument:
     text: str
     meta: dict[str, Any]
 
 
 class Extractor(Protocol):
-    def can_handle(self, *, path: str, content_type: str | None) -> bool: ...
+    def can_handle(self, *, filename: str, content_type: str | None) -> bool: ...
 
-    def extract(self, *, path: str, content_type: str | None) -> ExtractedText: ...
-
-
+    def extract(self, *, filename: str, content: bytes, content_type: str | None) -> ExtractedDocument: ...

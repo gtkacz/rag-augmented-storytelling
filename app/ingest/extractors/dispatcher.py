@@ -1,37 +1,25 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-from app.ingest.extractors.base import ExtractedText, Extractor
+from app.ingest.extractors.base import ExtractedDocument, Extractor
 from app.ingest.extractors.html import HtmlExtractor
 from app.ingest.extractors.pdf import PdfExtractor
-from app.ingest.extractors.plaintext import PlainTextExtractor
-from app.ingest.extractors.structured import StructuredTextExtractor
+from app.ingest.extractors.plaintext import PlaintextExtractor
+from app.ingest.extractors.structured import JsonExtractor
 
 
 class ExtractorDispatcher:
     def __init__(self) -> None:
         self._extractors: list[Extractor] = [
-            PdfExtractor(),
+            PlaintextExtractor(),
             HtmlExtractor(),
-            StructuredTextExtractor(),
-            PlainTextExtractor(),
+            PdfExtractor(),
+            JsonExtractor(),
         ]
 
-    def extract(self, *, path: str, content_type: str | None) -> ExtractedText:
-        for ext in self._extractors:
-            if ext.can_handle(path=path, content_type=content_type):
-                out = ext.extract(path=path, content_type=content_type)
-                # Always attach file name for citations.
-                out.meta.setdefault("source_name", Path(path).name)
-                return out
-
-        # Fallback: best-effort decode as text.
-        data = Path(path).read_bytes()
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            text = data.decode("latin-1", errors="replace")
-        return ExtractedText(text=text, meta={"source_type": "fallback", "source_name": Path(path).name})
-
-
+    def extract(self, *, filename: str, content: bytes, content_type: str | None) -> ExtractedDocument:
+        for ex in self._extractors:
+            if ex.can_handle(filename=filename, content_type=content_type):
+                return ex.extract(filename=filename, content=content, content_type=content_type)
+        # Fallback: treat as utf-8 text.
+        text = content.decode("utf-8", errors="replace")
+        return ExtractedDocument(text=text, meta={"kind": "fallback_text", "filename": filename})

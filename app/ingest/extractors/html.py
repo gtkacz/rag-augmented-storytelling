@@ -2,25 +2,24 @@ from __future__ import annotations
 
 from bs4 import BeautifulSoup
 
-from app.ingest.extractors.base import ExtractedText
-from app.ingest.extractors.common import ext_lower, read_text_file
+from app.ingest.extractors.base import ExtractedDocument
 
 
 class HtmlExtractor:
-    _exts = {"html", "htm"}
-
-    def can_handle(self, *, path: str, content_type: str | None) -> bool:
+    def can_handle(self, *, filename: str, content_type: str | None) -> bool:
+        name = filename.lower()
         if content_type in {"text/html", "application/xhtml+xml"}:
             return True
-        return ext_lower(path) in self._exts
+        return name.endswith((".html", ".htm"))
 
-    def extract(self, *, path: str, content_type: str | None) -> ExtractedText:
-        raw = read_text_file(path)
-        soup = BeautifulSoup(raw, "html.parser")
-        # Remove scripts/styles for cleaner text.
+    def extract(self, *, filename: str, content: bytes, content_type: str | None) -> ExtractedDocument:
+        soup = BeautifulSoup(content, "lxml")
+        # Remove non-content.
         for tag in soup(["script", "style", "noscript"]):
-            tag.extract()
-        text = soup.get_text("\n")
-        return ExtractedText(text=text, meta={"source_type": "html"})
-
-
+            tag.decompose()
+        text = "\n".join(line.strip() for line in soup.get_text("\n").splitlines() if line.strip())
+        title = soup.title.string.strip() if soup.title and soup.title.string else None
+        return ExtractedDocument(
+            text=text,
+            meta={"kind": "html", "filename": filename, "title": title},
+        )

@@ -1,50 +1,51 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
-from app.core.settings import settings
-from app.embeddings.hf_dense import HuggingFaceDenseEmbedder
-from app.vectorstore.chroma import ChromaVectorStore
+from app.embeddings.hf_dense import HFDenseEmbedder
+from app.vectorstore.qdrant import QdrantVectorStore, RetrievedChunk
+
+
+@dataclass(frozen=True)
+class Citation:
+    chunk_id: str
+    doc_id: str
+    score: float
+    snippet: str
+    metadata: dict[str, Any]
 
 
 class RetrievalService:
     def __init__(self) -> None:
-        self._embedder = HuggingFaceDenseEmbedder()
-        self._vs = ChromaVectorStore()
+        self._embedder = HFDenseEmbedder()
+        self._vs = QdrantVectorStore()
 
-    def retrieve(
+    async def retrieve(
         self,
         *,
         kb_id: str,
         question: str,
-        top_k: int | None = None,
-        where: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        qv = self._embedder.embed_texts([question])[0]
-        results = self._vs.query(
-            kb_id=kb_id,
-            query_vector=qv,
-            top_k=top_k or settings.rag_top_k,
-            where=where,
-        )
+        top_k: int,
+        where: dict[str, Any] | None,
+    ) -> list[RetrievedChunk]:
+        q = self._embedder.embed_query(question)
+        return await self._vs.search(kb_id=kb_id, query_vector=q, top_k=top_k, where=where)
 
-        contexts: list[dict[str, Any]] = []
-        total = 0
-        for r in results:
-            citation = r.meta.get("source_name") or r.meta.get("doc_id") or r.id
-            text = r.text
-            if total + len(text) > settings.rag_max_context_chars:
-                break
-            total += len(text)
-            contexts.append(
-                {
-                    "id": r.id,
-                    "score": r.score,
-                    "text": text,
-                    "meta": r.meta,
-                    "citation": citation,
-                }
+    @staticmethod
+    def to_citations(chunks: list[RetrievedChunk]) -> list[Citation]:
+        citations: list[Citation] = []
+        for c in chunks:
+            text = c.text
+            snippet = text[:400] + ("…" if len(text) > 400 else "")
+            meta = dict(c.payload or {})
+            citations.append(
+                Citation(
+                    chunk_id=c.chunk_id,
+                    doc_id=c.doc_id,
+                    score=c.score,
+                    snippet=snippet,
+                    metadata=meta,
+                )
             )
-        return contexts
-
-
+        return citations

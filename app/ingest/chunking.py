@@ -1,62 +1,66 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 
 @dataclass(frozen=True)
-class TextChunk:
+class Chunk:
     index: int
     text: str
-    start_offset: int | None
-    end_offset: int | None
-    meta: dict[str, Any]
+    start: int | None
+    end: int | None
 
 
 def chunk_text(
     text: str,
     *,
-    chunk_size: int = 1200,
+    max_chars: int = 1200,
     overlap: int = 150,
-    base_meta: dict[str, Any] | None = None,
-) -> list[TextChunk]:
-    text = text or ""
-    if not text.strip():
+) -> list[Chunk]:
+    """Simple, robust chunker.
+
+    - Splits on paragraph boundaries when possible.
+    - Enforces max_chars with sliding-window fallback.
+    """
+
+    normalized = text.replace("\r\n", "\n")
+    paras = [p.strip() for p in normalized.split("\n\n") if p.strip()]
+    if not paras:
         return []
 
-    base_meta = dict(base_meta or {})
-    chunks: list[TextChunk] = []
+    chunks: list[Chunk] = []
+    buf = ""
+    idx = 0
+    pos = 0
 
-    i = 0
-    start = 0
-    n = len(text)
-    while start < n:
-        end = min(n, start + chunk_size)
+    def flush() -> None:
+        nonlocal buf, idx, pos
+        if not buf:
+            return
+        start = pos
+        end = pos + len(buf)
+        chunks.append(Chunk(index=idx, text=buf, start=start, end=end))
+        idx += 1
+        pos = max(end - overlap, 0)
+        buf = ""
 
-        # Try not to cut mid-paragraph if possible (best-effort).
-        if end < n:
-            window = text[start:end]
-            last_break = max(window.rfind("\n\n"), window.rfind("\n"))
-            if last_break > chunk_size * 0.6:
-                end = start + last_break
+    for p in paras:
+        candidate = (buf + "\n\n" + p).strip() if buf else p
+        if len(candidate) <= max_chars:
+            buf = candidate
+            continue
+        flush()
+        if len(p) <= max_chars:
+            buf = p
+            continue
 
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(
-                TextChunk(
-                    index=i,
-                    text=chunk,
-                    start_offset=start,
-                    end_offset=end,
-                    meta=dict(base_meta),
-                )
-            )
-            i += 1
+        # Fallback: sliding window.
+        i = 0
+        while i < len(p):
+            window = p[i : i + max_chars]
+            chunks.append(Chunk(index=idx, text=window, start=None, end=None))
+            idx += 1
+            i = max(i + max_chars - overlap, i + 1)
 
-        if end >= n:
-            break
-        start = max(0, end - overlap)
-
+    flush()
     return chunks
-
-

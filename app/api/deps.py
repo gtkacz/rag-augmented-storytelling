@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import AsyncIterator
 
-from app.db.session import SessionLocal
+from app.db.session import AsyncSessionLocal
 
 
-def get_session() -> Generator:
-    with SessionLocal() as session:
+async def get_db() -> AsyncIterator[AsyncSessionLocal]:
+    async with AsyncSessionLocal() as session:
         yield session
-
-

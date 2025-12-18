@@ -1,29 +1,30 @@
 from __future__ import annotations
 
+from io import BytesIO
+
 from pypdf import PdfReader
 
-from app.ingest.extractors.base import ExtractedText
-from app.ingest.extractors.common import ext_lower
+from app.ingest.extractors.base import ExtractedDocument
 
 
 class PdfExtractor:
-    _exts = {"pdf"}
-
-    def can_handle(self, *, path: str, content_type: str | None) -> bool:
+    def can_handle(self, *, filename: str, content_type: str | None) -> bool:
+        name = filename.lower()
         if content_type == "application/pdf":
             return True
-        return ext_lower(path) in self._exts
+        return name.endswith(".pdf")
 
-    def extract(self, *, path: str, content_type: str | None) -> ExtractedText:
-        reader = PdfReader(path)
-        pages: list[str] = []
-        for i, page in enumerate(reader.pages):
-            try:
-                txt = page.extract_text() or ""
-            except Exception:
-                txt = ""
-            pages.append(f"[page {i+1}]\n{txt}".strip())
-        text = "\n\n".join([p for p in pages if p])
-        return ExtractedText(text=text, meta={"source_type": "pdf", "pages": len(reader.pages)})
-
-
+    def extract(self, *, filename: str, content: bytes, content_type: str | None) -> ExtractedDocument:
+        reader = PdfReader(BytesIO(content))
+        texts: list[str] = []
+        for page in reader.pages:
+            t = page.extract_text() or ""
+            if t.strip():
+                texts.append(t)
+        text = "\n\n".join(texts)
+        meta = {
+            "kind": "pdf",
+            "filename": filename,
+            "pages": len(reader.pages),
+        }
+        return ExtractedDocument(text=text, meta=meta)

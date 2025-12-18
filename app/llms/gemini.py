@@ -1,33 +1,20 @@
 from __future__ import annotations
 
-import logging
+# Stub adapter (kept for future).
+# The primary integration path is OpenAI-compatible providers.
 
-from google import genai
+from dataclasses import dataclass
 
-from app.core.settings import settings
 
-logger = logging.getLogger(__name__)
+@dataclass(frozen=True)
+class GeminiConfig:
+    api_key: str
+    model: str = "gemini-1.5-pro"
 
 
 class GeminiClient:
-    def __init__(self) -> None:
-        if not settings.gemini_api_key:
-            raise ValueError("GEMINI_API_KEY is not set")
-        self._client = genai.Client(api_key=settings.gemini_api_key)
+    def __init__(self, config: GeminiConfig) -> None:
+        self._config = config
 
-    def generate(self, *, system: str, user: str) -> str:
-        # Minimal wrapper around SDK; keeps the door open to add retries/timeouts later.
-        resp = self._client.models.generate_content(
-            model=settings.gemini_model,
-            contents=[
-                {"role": "user", "parts": [{"text": f"{system}\n\n{user}"}]},
-            ],
-        )
-
-        text = getattr(resp, "text", None)
-        if not text:
-            # Fallback: try to stringify the whole response for debugging.
-            return str(resp)
-        return text
-
-
+    async def chat(self, *, system: str, user: str) -> str:
+        raise NotImplementedError("Gemini adapter not implemented yet; use OpenAI-compatible providers.")

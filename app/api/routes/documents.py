@@ -1,131 +1,116 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
+import json
+from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_session
+from app.api.deps import get_db
 from app.db import crud
-from app.ingest.pipeline import IngestionPipeline
-from app.storage.local import save_upload
+from app.ingest.pipeline import IngestService
+from app.vectorstore.qdrant import QdrantVectorStore
 
 router = APIRouter()
 
 
-class UploadResponse(BaseModel):
-    doc_id: str
+class DocumentOut(BaseModel):
+    id: str
+    kb_id: str
     filename: str
-    status: str
+    content_type: str | None
+    sha256: str
+    size_bytes: int
+    created_at: str
 
 
-class IngestStartResponse(BaseModel):
-    job_id: str
-    state: str
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-@router.post("/{kb_id}/documents", response_model=list[UploadResponse])
-def upload_documents(
+@router.post("/kbs/{kb_id}/documents")
+async def upload_document(
     kb_id: str,
-    files: list[UploadFile] = File(...),
-    session: Session = Depends(get_session),
-) -> list[UploadResponse]:
-    kb = crud.get_kb(session, kb_id)
+    file: UploadFile = File(...),
+    user_meta_json: str | None = Form(default=None),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    kb = await crud.get_kb(session, kb_id)
     if not kb:
-        raise HTTPException(status_code=404, detail="knowledge base not found")
+        raise HTTPException(status_code=404, detail="KB not found")
 
-    out: list[UploadResponse] = []
-    for f in files:
-        doc = crud.create_document(session, kb_id=kb_id, original_filename=f.filename or "upload", content_type=f.content_type)
-        save_upload(kb_id, doc.id, f)
-        out.append(UploadResponse(doc_id=doc.id, filename=doc.original_filename, status=doc.status))
-    return out
+    content = await file.read()
+
+    user_meta: dict[str, Any] | None = None
+    if user_meta_json:
+        try:
+            user_meta = json.loads(user_meta_json)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid user_meta_json: {e}") from e
+
+    service = IngestService()
+    result = await service.ingest_upload(
+        session=session,
+        kb_id=kb_id,
+        filename=file.filename or "upload",
+        content_type=file.content_type,
+        content=content,
+        user_meta=user_meta,
+    )
+
+    return {"doc_id": result.doc_id, "chunk_count": result.chunk_count}
 
 
-@router.post("/{kb_id}/documents/{doc_id}/ingest", response_model=IngestStartResponse)
-def start_ingest(
-    kb_id: str,
-    doc_id: str,
-    background: BackgroundTasks,
-    session: Session = Depends(get_session),
-) -> IngestStartResponse:
-    kb = crud.get_kb(session, kb_id)
+@router.get("/kbs/{kb_id}/documents")
+async def list_documents(kb_id: str, session: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
+    kb = await crud.get_kb(session, kb_id)
     if not kb:
-        raise HTTPException(status_code=404, detail="knowledge base not found")
+        raise HTTPException(status_code=404, detail="KB not found")
 
-    doc = crud.get_document(session, doc_id)
-    if not doc or doc.kb_id != kb_id:
-        raise HTTPException(status_code=404, detail="document not found")
-
-    job = crud.create_ingestion_job(session, kb_id=kb_id, doc_id=doc_id)
-
-    def _run(job_id: str) -> None:
-        # Separate session for background task.
-        from app.db.session import SessionLocal
-
-        with SessionLocal() as bg:
-            j = crud.get_job(bg, job_id)
-            if not j:
-                return
-            j.state = "running"
-            j.started_at = utcnow()
-            bg.add(j)
-            bg.commit()
-
-            try:
-                from app.core.settings import settings
-                raw_dir = settings.kb_files_dir / kb_id / "raw" / doc_id
-                # Take the first file in the raw dir (MVP).
-                files = sorted([p for p in raw_dir.glob("*") if p.is_file()])
-                if not files:
-                    raise ValueError("no raw file found for document")
-
-                pipeline = IngestionPipeline()
-                pipeline.ingest_document(
-                    session=bg,
-                    kb_id=kb_id,
-                    doc_id=doc_id,
-                    raw_path=files[0],
-                    content_type=doc.content_type,
-                )
-
-                j.state = "succeeded"
-                j.finished_at = utcnow()
-                bg.add(j)
-                bg.commit()
-            except Exception as e:
-                j.state = "failed"
-                j.error = str(e)
-                j.finished_at = utcnow()
-                bg.add(j)
-                bg.commit()
-
-    background.add_task(_run, job.id)
-    return IngestStartResponse(job_id=job.id, state=job.state)
+    docs = await crud.list_documents(session, kb_id)
+    return [
+        {
+            "id": d.id,
+            "kb_id": d.kb_id,
+            "filename": d.filename,
+            "content_type": d.content_type,
+            "sha256": d.sha256,
+            "size_bytes": d.size_bytes,
+            "created_at": d.created_at.isoformat(),
+        }
+        for d in docs
+    ]
 
 
-@router.get("/{kb_id}/jobs/{job_id}")
-def get_job(kb_id: str, job_id: str, session: Session = Depends(get_session)) -> dict:
-    kb = crud.get_kb(session, kb_id)
-    if not kb:
-        raise HTTPException(status_code=404, detail="knowledge base not found")
-    job = crud.get_job(session, job_id)
-    if not job or job.kb_id != kb_id:
-        raise HTTPException(status_code=404, detail="job not found")
+@router.get("/documents/{doc_id}")
+async def get_document(doc_id: str, session: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    doc = await crud.get_document(session, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
     return {
-        "id": job.id,
-        "kb_id": job.kb_id,
-        "doc_id": job.doc_id,
-        "state": job.state,
-        "error": job.error,
-        "created_at": job.created_at,
-        "started_at": job.started_at,
-        "finished_at": job.finished_at,
+        "id": doc.id,
+        "kb_id": doc.kb_id,
+        "filename": doc.filename,
+        "content_type": doc.content_type,
+        "sha256": doc.sha256,
+        "size_bytes": doc.size_bytes,
+        "created_at": doc.created_at.isoformat(),
+        "extraction_meta": doc.extraction_meta,
+        "user_meta": doc.user_meta,
     }
 
+
+@router.delete("/documents/{doc_id}")
+async def delete_document(doc_id: str, session: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    doc = await crud.get_document(session, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    kb_id = doc.kb_id
+
+    # Best-effort remove vectors first.
+    try:
+        await QdrantVectorStore().delete_doc_vectors(kb_id=kb_id, doc_id=doc_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+    await crud.delete_document(session, doc_id)
+
+    return {"deleted": True, "doc_id": doc_id}

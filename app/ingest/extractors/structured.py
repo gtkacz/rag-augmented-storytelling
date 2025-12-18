@@ -2,37 +2,17 @@ from __future__ import annotations
 
 import json
 
-import orjson
-import yaml
-
-from app.ingest.extractors.base import ExtractedText
-from app.ingest.extractors.common import ext_lower, read_text_file
+from app.ingest.extractors.base import ExtractedDocument
 
 
-class StructuredTextExtractor:
-    _exts = {"json", "yaml", "yml"}
-
-    def can_handle(self, *, path: str, content_type: str | None) -> bool:
-        if content_type in {"application/json", "text/yaml", "application/x-yaml"}:
+class JsonExtractor:
+    def can_handle(self, *, filename: str, content_type: str | None) -> bool:
+        name = filename.lower()
+        if content_type == "application/json":
             return True
-        return ext_lower(path) in self._exts
+        return name.endswith(".json")
 
-    def extract(self, *, path: str, content_type: str | None) -> ExtractedText:
-        raw = read_text_file(path)
-        ext = ext_lower(path)
-        if ext == "json" or content_type == "application/json":
-            # Parse & pretty-print for stable chunking.
-            try:
-                obj = orjson.loads(raw)
-                text = orjson.dumps(obj, option=orjson.OPT_INDENT_2).decode("utf-8")
-            except Exception:
-                obj2 = json.loads(raw)
-                text = json.dumps(obj2, indent=2, ensure_ascii=False)
-            return ExtractedText(text=text, meta={"source_type": "json"})
-
-        # YAML
-        obj = yaml.safe_load(raw)
-        text = yaml.safe_dump(obj, sort_keys=False, allow_unicode=True)
-        return ExtractedText(text=text, meta={"source_type": "yaml"})
-
-
+    def extract(self, *, filename: str, content: bytes, content_type: str | None) -> ExtractedDocument:
+        obj = json.loads(content.decode("utf-8", errors="replace"))
+        text = json.dumps(obj, ensure_ascii=False, indent=2)
+        return ExtractedDocument(text=text, meta={"kind": "json", "filename": filename})

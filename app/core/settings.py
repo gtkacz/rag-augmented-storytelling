@@ -2,41 +2,49 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # Load env from repo-root .env regardless of current working directory
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).resolve().parents[2] / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
-    app_name: str = "rag-augmented-storytelling"
-    environment: str = "local"
+    # App
+    app_env: str = Field(default="dev", alias="APP_ENV")
+    app_host: str = Field(default="127.0.0.1", alias="APP_HOST")
+    app_port: int = Field(default=8000, alias="APP_PORT")
 
-    # Paths (relative to backend/ by default)
-    backend_root: Path = Path(__file__).resolve().parents[1]
-    data_dir: Path = backend_root / "data"
-    sqlite_path: Path = data_dir / "app.db"
-    chroma_dir: Path = data_dir / "chroma"
-    kb_files_dir: Path = data_dir / "kb"
+    # Storage
+    data_dir: Path = Field(default=Path("./data"), alias="DATA_DIR")
 
-    # Embeddings (local HF)
-    embedding_model: str = "antoinelouis/colbert-xm"
-    embedding_device: str = "cpu"
-    embedding_max_length: int = 256
+    # DB
+    database_url: str = Field(
+        default="sqlite+aiosqlite:///./data/app.db",
+        alias="DATABASE_URL",
+    )
 
-    # Retrieval
-    rag_top_k: int = 6
-    rag_max_context_chars: int = 12000
+    # Qdrant
+    qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
+    qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
 
-    # Gemini
-    gemini_api_key: str | None = None
-    gemini_model: str = "gemini-1.5-pro"
-    gemini_timeout_s: float = 60.0
+    # Embeddings
+    embedding_model: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        alias="EMBEDDING_MODEL",
+    )
+    embedding_device: str = Field(default="cpu", alias="EMBEDDING_DEVICE")
+    embedding_batch_size: int = Field(default=32, alias="EMBEDDING_BATCH_SIZE")
+
+    # HTTP
+    http_timeout_s: float = Field(default=60.0, alias="HTTP_TIMEOUT_S")
+
+    @property
+    def files_dir(self) -> Path:
+        return self.data_dir / "files"
 
 
 settings = Settings()
-

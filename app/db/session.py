@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-from sqlmodel import Session, SQLModel, create_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.settings import settings
-from app.db import models  # noqa: F401
+from app.db.models import Base
 
-engine = create_engine(
-    f"sqlite:///{settings.sqlite_path}",
-    connect_args={"check_same_thread": False},
+
+engine: AsyncEngine = create_async_engine(
+    settings.database_url,
+    pool_pre_ping=True,
+    connect_args={"check_same_thread": False} if settings.database_url.startswith("sqlite") else {},
 )
 
-
-def init_db() -> None:
-    # MVP: create tables automatically. Alembic scaffolding can be added later.
-    SQLModel.metadata.create_all(engine)
+AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
-class SessionLocal(Session):
-    def __init__(self) -> None:
-        super().__init__(engine)
-
-
+async def init_db() -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)

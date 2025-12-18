@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-from app.ingest.extractors.base import ExtractedText
-from app.ingest.extractors.common import ext_lower, read_text_file
+from app.ingest.extractors.base import ExtractedDocument
 
 
-class PlainTextExtractor:
-    _exts = {"txt", "md", "markdown", "log"}
-
-    def can_handle(self, *, path: str, content_type: str | None) -> bool:
+class PlaintextExtractor:
+    def can_handle(self, *, filename: str, content_type: str | None) -> bool:
+        name = filename.lower()
         if content_type and content_type.startswith("text/"):
             return True
-        return ext_lower(path) in self._exts
+        return name.endswith((".txt", ".md", ".markdown"))
 
-    def extract(self, *, path: str, content_type: str | None) -> ExtractedText:
-        text = read_text_file(path)
-        return ExtractedText(text=text, meta={"source_type": "text"})
-
-
+    def extract(self, *, filename: str, content: bytes, content_type: str | None) -> ExtractedDocument:
+        text = content.decode("utf-8", errors="replace")
+        return ExtractedDocument(text=text, meta={"kind": "plaintext", "filename": filename})

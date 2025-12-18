@@ -1,115 +1,97 @@
 from __future__ import annotations
 
-import logging
-from datetime import datetime, timezone
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
-from sqlmodel import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.settings import settings
 from app.db import crud
-from app.db.models import Chunk, EmbeddingRecord
-from app.embeddings.hf_dense import HuggingFaceDenseEmbedder
+from app.db.models import Chunk as ChunkModel
+from app.embeddings.hf_dense import HFDenseEmbedder
 from app.ingest.chunking import chunk_text
 from app.ingest.extractors.dispatcher import ExtractorDispatcher
-from app.storage.local import write_extracted_text
-from app.vectorstore.chroma import ChromaVectorStore
-
-logger = logging.getLogger(__name__)
+from app.storage.local import LocalFileStore
+from app.vectorstore.qdrant import QdrantVectorStore
 
 
-class IngestionPipeline:
+@dataclass(frozen=True)
+class IngestResult:
+    doc_id: str
+    chunk_count: int
+
+
+class IngestService:
     def __init__(self) -> None:
-        self._extract = ExtractorDispatcher()
-        self._embedder = HuggingFaceDenseEmbedder()
-        self._vs = ChromaVectorStore()
+        self._files = LocalFileStore()
+        self._extractors = ExtractorDispatcher()
+        self._embedder = HFDenseEmbedder()
+        self._vs = QdrantVectorStore()
 
-    def ingest_document(
+    async def ingest_upload(
         self,
         *,
-        session: Session,
+        session: AsyncSession,
         kb_id: str,
-        doc_id: str,
-        raw_path: Path,
+        filename: str,
         content_type: str | None,
-        chunk_size: int = 1200,
-        overlap: int = 150,
-    ) -> dict[str, Any]:
-        doc = crud.get_document(session, doc_id)
-        if not doc or doc.kb_id != kb_id:
-            raise ValueError("document not found for kb")
+        content: bytes,
+        user_meta: dict[str, Any] | None,
+    ) -> IngestResult:
+        storage_path, sha, size = self._files.put(kb_id=kb_id, filename=filename, content=content)
 
-        doc.status = "ingesting"
-        session.add(doc)
-        session.commit()
+        extracted = self._extractors.extract(filename=filename, content=content, content_type=content_type)
+        chunks = chunk_text(extracted.text)
 
-        extracted = self._extract.extract(path=str(raw_path), content_type=content_type)
-        write_extracted_text(kb_id, doc_id, extracted.text)
+        # Persist doc + chunks
+        doc = await crud.create_document(
+            session,
+            kb_id=kb_id,
+            filename=filename,
+            content_type=content_type,
+            sha256=sha,
+            size_bytes=size,
+            storage_path=storage_path,
+            extracted_text=extracted.text,
+            extraction_meta=extracted.meta,
+            user_meta=user_meta,
+        )
 
-        base_meta = {"doc_id": doc_id, "source_name": extracted.meta.get("source_name")}
-        chunks = chunk_text(extracted.text, chunk_size=chunk_size, overlap=overlap, base_meta=base_meta)
+        chunk_models: list[ChunkModel] = []
+        payloads: list[dict[str, Any]] = []
+        texts: list[str] = []
+        point_ids: list[str] = []
 
-        if not chunks:
-            doc.status = "error"
-            session.add(doc)
-            session.commit()
-            raise ValueError("no text extracted from document")
-
-        # Persist chunks
-        chunk_rows: list[Chunk] = []
         for c in chunks:
-            row = Chunk(
+            cm = ChunkModel(
                 kb_id=kb_id,
-                doc_id=doc_id,
+                doc_id=doc.id,
                 chunk_index=c.index,
                 text=c.text,
-                start_offset=c.start_offset,
-                end_offset=c.end_offset,
-                meta=c.meta,
+                token_count=None,
+                start_offset=c.start,
+                end_offset=c.end,
+                payload={
+                    "kb_id": kb_id,
+                    "doc_id": doc.id,
+                    "chunk_index": c.index,
+                    "filename": filename,
+                    **(extracted.meta or {}),
+                    **(user_meta or {}),
+                },
             )
-            session.add(row)
-            chunk_rows.append(row)
-        session.commit()
-        for r in chunk_rows:
-            session.refresh(r)
+            chunk_models.append(cm)
 
-        # Embed & upsert
-        texts = [r.text for r in chunk_rows]
-        vectors = self._embedder.embed_texts(texts)
-        metadatas = [
-            {
-                "kb_id": kb_id,
-                "doc_id": doc_id,
-                "chunk_id": r.id,
-                "chunk_index": r.chunk_index,
-                "source_name": r.meta.get("source_name") or doc.original_filename,
-            }
-            for r in chunk_rows
-        ]
-        self._vs.upsert(kb_id=kb_id, ids=[r.id for r in chunk_rows], vectors=vectors, texts=texts, metadatas=metadatas)
+        chunk_models = await crud.create_chunks(session, chunk_models)
 
-        # Save embedding records
-        dims = len(vectors[0]) if vectors else 0
-        for r in chunk_rows:
-            session.add(
-                EmbeddingRecord(
-                    chunk_id=r.id,
-                    vector_id=r.id,
-                    embedding_model=settings.embedding_model,
-                    dims=dims,
-                )
-            )
-        session.commit()
+        for cm in chunk_models:
+            payload = dict(cm.payload or {})
+            payload.update({"chunk_id": cm.id, "text": cm.text, "kb_id": kb_id, "doc_id": doc.id})
+            payloads.append(payload)
+            texts.append(cm.text)
+            point_ids.append(cm.id)
 
-        doc.status = "ready"
-        session.add(doc)
-        session.commit()
+        embedded = self._embedder.embed_texts(texts)
+        await self._vs.ensure_kb_collection(kb_id=kb_id, vector_size=embedded.dim)
+        await self._vs.upsert_chunks(kb_id=kb_id, vectors=embedded.vectors, payloads=payloads, point_ids=point_ids)
 
-        return {"chunks": len(chunk_rows), "embedding_dims": dims, "extracted_meta": extracted.meta}
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
+        return IngestResult(doc_id=doc.id, chunk_count=len(chunk_models))

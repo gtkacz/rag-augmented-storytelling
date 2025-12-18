@@ -1,70 +1,37 @@
-# rag-augmented-storytelling
+## RAG-augmented storytelling
 
-Local-first backend for **RAG-enhanced storytellers**: users upload arbitrary “world” knowledge, the backend indexes it locally, and `/query` retrieves context + calls Gemini to generate grounded responses.
+Backend: FastAPI + Qdrant + local Hugging Face embeddings.
+Frontend: Streamlit.
 
-## Backend (FastAPI)
+### Requirements
+- Python **3.13+**
+- [`uv`](https://github.com/astral-sh/uv)
+- Qdrant running locally (default `http://localhost:6333`)
 
 ### Setup
+- Copy `env.example` to `.env` and adjust values.
 
-From the repo root:
-
+### Install
 ```bash
-cd backend
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -U pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+uv sync
 ```
 
-Set environment variables (PowerShell):
-
-```powershell
-$env:GEMINI_API_KEY="YOUR_KEY"
-$env:GEMINI_MODEL="gemini-1.5-pro"
-$env:EMBEDDING_MODEL="antoinelouis/colbert-xm"
-$env:EMBEDDING_DEVICE="cpu"
-```
-
-Run:
-
+### Run API
 ```bash
-cd backend
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-### Data layout (local)
-- **SQLite**: `backend/data/app.db`
-- **Files**: `backend/data/kb/<kb_id>/raw/<doc_id>/...`
-- **Artifacts**: `backend/data/kb/<kb_id>/artifacts/<doc_id>/extracted.txt`
-- **Chroma**: `backend/data/chroma/`
-
-### API usage (curl)
-
-Create a knowledge base:
-
+### Run Streamlit
 ```bash
-curl -X POST http://127.0.0.1:8000/kbs -H "Content-Type: application/json" -d "{\"name\":\"my_world\",\"description\":\"campaign lore\"}"
+uv run streamlit run streamlit_app.py
 ```
 
-Upload documents:
-
+### Lint/format
 ```bash
-curl -X POST http://127.0.0.1:8000/kbs/<kb_id>/documents -F "files=@world.md" -F "files=@notes.pdf"
+uv run ruff check .
+uv run ruff format .
 ```
 
-Start ingestion:
-
-```bash
-curl -X POST http://127.0.0.1:8000/kbs/<kb_id>/documents/<doc_id>/ingest
-```
-
-Check job:
-
-```bash
-curl http://127.0.0.1:8000/kbs/<kb_id>/jobs/<job_id>
-```
-
-Query (RAG + Gemini):
-
-```bash
-curl -X POST http://127.0.0.1:8000/kbs/<kb_id>/query -H "Content-Type: application/json" -d "{\"question\":\"Who rules the city of Veyra?\",\"top_k\":6}"
-```
+### Notes
+- Each knowledge base uses a separate Qdrant collection (`kb_{kb_id}`).
+- Uploaded files are stored under `DATA_DIR/files/`.
