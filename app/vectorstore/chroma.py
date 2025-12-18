@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-import chromadb
-
 from app.core.settings import settings
 from app.vectorstore.base import VectorSearchResult
 
 
 class ChromaVectorStore:
     def __init__(self) -> None:
+        # Import lazily to avoid crashing the whole app on dependency mismatches
+        # (e.g. pydantic v2 vs older chromadb builds).
+        import chromadb  # type: ignore
+
         self._client = chromadb.PersistentClient(path=str(settings.chroma_dir))
 
     def _collection_name(self, kb_id: str) -> str:

@@ -6,13 +6,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # Load env from repo-root .env regardless of current working directory
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).resolve().parents[2] / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     app_name: str = "rag-augmented-storytelling"
     environment: str = "local"
 
     # Paths (relative to backend/ by default)
-    backend_root: Path = Path(__file__).resolve().parents[2]
+    backend_root: Path = Path(__file__).resolve().parents[1]
     data_dir: Path = backend_root / "data"
     sqlite_path: Path = data_dir / "app.db"
     chroma_dir: Path = data_dir / "chroma"
